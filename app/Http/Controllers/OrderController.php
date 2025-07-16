@@ -5,31 +5,28 @@ namespace App\Http\Controllers;
 use App\Http\Requests\CreateOrderRequest;
 use App\Models\Order;
 use App\Models\Product;
-use App\Models\User;
-use Illuminate\Http\Request;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class OrderController extends Controller
 {
-    public function create(CreateOrderRequest $request)
+    public function create(CreateOrderRequest $request): JsonResponse
     {
         try {
-            //имитируем авторизованного пользователя в нашем случае с  email = user@user.com
-            $user = User::query()->where('email', '=', 'user@user.com')->first();
-            $userId = $user->id;
+            $orderNumber = Str::uuid();
+            $syncArray = [];
             $data = $request->validated();
 
             DB::beginTransaction();
-            $orderNumber = Str::uuid();
-            // Создаем заказ:
-            $order = Order::create([
-                'user_id' => $userId,
+
+            $order = Order::query()->create([
+                'user_id' => $data['user_id'],
                 'number' => $orderNumber,
                 'date' => now(),
             ]);
-            $syncArray = [];
+
             foreach ($data['products'] as $product) {
                 $productId = $product['product_id'];
                 $quantity = $product['quantity'];
@@ -45,8 +42,8 @@ class OrderController extends Controller
                     'price' => $price,
                     'quantity' => $quantity
                 ];
-
             }
+
             $order->products()->sync($syncArray);
             DB::commit();
             return response()->json(['message' => "Заказ №{$orderNumber} успешно создан"], 201);
