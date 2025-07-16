@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\ApprovedOrderRequest;
 use App\Http\Requests\CreateOrderRequest;
 use App\Models\Order;
 use App\Models\Product;
@@ -38,13 +39,17 @@ class OrderController extends Controller
                 if ($product->quantity < intval($quantity)) {
                     throw new \Exception("Недостаточно товара '{$product->name}', доступно: {$product->quantity}");
                 }
+                $product->quantity-=$quantity;
+
                 $syncArray[$productId] = [
                     'price' => $price,
                     'quantity' => $quantity
                 ];
+                $product->save();
             }
 
             $order->products()->sync($syncArray);
+
             DB::commit();
             return response()->json(['message' => "Заказ №{$orderNumber} успешно создан"], 201);
         } catch (\Exception $e) {
@@ -54,8 +59,51 @@ class OrderController extends Controller
         }
     }
 
-    public function approved()
+    public function approved(ApprovedOrderRequest $request): JsonResponse
     {
-        return 'approved';
+        $data = $request->validated();
+        $order = Order::query()->where('number', '=', $data['order_number'])->first();
+        if (!$order) {
+            return response()->json(['error' => 'Заказ не найден'], 404);
+        }
+
+        if ($order->status == 'paid' || $order->status == 'cancelled') {
+            return response()->json(['error' => 'Заказ уже оплачен или отменен'], 400);
+        }
+
+        $totalSum = 0;
+        foreach ($order->products as $product) {
+            $totalSum += floatval($product->pivot->price)*$product->pivot->quantity;
+        }
+        // Проверка баланса пользователя:
+        if ($order -> user -> balance < $totalSum){
+            return response()->json(['error'=>'Недостаточно средств на балансе'],400);
+        }
+
+        try{
+
+            DB::beginTransaction();
+            // Списание средств:
+            $_user= $order -> user;
+            $_user -> balance -=$totalSum;
+            if (!$_user -> save()){
+                throw new \Exception("Ошибка списания средств");
+            }
+
+            // Обновление статуса заказа:
+            $order -> status= 'approved';
+            if (!$order -> save()){
+                throw new \Exception("Ошибка обновления статуса заказа");
+            }
+
+            DB::commit();
+
+            return response() -> json(['message'=>'Заказ подтвержден','total_amount'=>$totalSum]);
+
+        } catch (\Exception$e){
+            DB::rollBack();
+            Log::error("Ошибка подтверждения заказа: ".$e->getMessage());
+            return response()->json(['error'=>'Ошибка при подтверждении заказа: '.$e->getMessage()],500);
+        }
     }
 }
